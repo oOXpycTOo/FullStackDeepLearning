@@ -1,0 +1,8 @@
+name: fsdl
+channels:
+  - defaults
+dependencies:
+  - python=3.6
+  - pip
+  - pip:
+    - pip-tools

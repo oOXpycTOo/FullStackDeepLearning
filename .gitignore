@@ -3,6 +3,14 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Model-related
+*.gz
+*-ubyte
+*.tfevents*
+*.pt
+hparams.yaml
+*.ckpt
+
 # C extensions
 *.so
 

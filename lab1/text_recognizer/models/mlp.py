@@ -29,17 +29,19 @@ class MLP(nn.Module):
 
         self.dropout = nn.Dropout(0.5)
         self.fc1 = nn.Linear(input_dim, fc1_dim)
+        self.bn1 = nn.BatchNorm1d(fc1_dim)
         self.fc2 = nn.Linear(fc1_dim, fc2_dim)
+        self.bn2 = nn.BatchNorm1d(fc2_dim)
         self.fc3 = nn.Linear(fc2_dim, num_classes)
 
     def forward(self, x):
         x = torch.flatten(x, 1)
         x = self.fc1(x)
+        x = self.bn1(x)
         x = F.relu(x)
-        x = self.dropout(x)
         x = self.fc2(x)
-        x = F.relu(x)
-        x = self.dropout(x)
+        x = self.bn2(x)
+        x = F.relu(x) 
         x = self.fc3(x)
         return x
 

@@ -133,7 +133,7 @@ class CNN(nn.Module):
         assert H == W == IMAGE_SIZE
         x = self.conv1(x)
         x = self.conv2(x)
-        x = self.poolingl(x)
+        x = self.pooling(x)
         x = self.dropout(x)
         x = torch.flatten(x, 1)
         x = self.fc1(x)

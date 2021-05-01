@@ -1,120 +1,181 @@
-# Lab 2: Convolutional Neural Nets and Synthetic Lines
+# Lab 3: Using CNN + LSTM with CTC loss for line text recognition
 
-## Goal of the lab
+## Goals
 
-We're working up to translating images of handwriting to text.
-In this lab, we're going to
+- Introduce `LineCNNSimple`, a model that can read multiple characters in an image
+- Make this model more efficient as `LineCNN`
+- Introduce CTC loss with `LitModelCTC`
+- Introduce an LSTM layer on top of CNN with `LineCNNLSTM`
 
-- Use a simple convolutional network to recognize EMNIST characters.
-- Construct a synthetic dataset of EMNIST lines.
-
-## Before you begin, make sure to set up!
-
-Please complete [Lab Setup](/setup/readme.md) before proceeding!
-
-Then, in the `fsdl-text-recognizer-2021-labs` repo, let's pull the latest changes, and enter the correct directory.
+## Follow along
 
 ```
 git pull
-cd lab2
+cd lab3
 ```
 
-## Intro to EMNIST
-
-MNIST stands for Mini-NIST, where NIST is the National Institute of Standards and Technology, which compiled a dataset of handwritten digits and letters in the 1980s.
-
-MNIST is Mini because it only included digits.
-
-EMNIST is a repackaging of the original dataset, which also includes letters, but presented in the popularized MNIST format.
-You can see a publication about it here https://www.paperswithcode.com/paper/emnist-an-extension-of-mnist-to-handwritten
-
-We can take a look at the data in `notebooks/01-look-at-emnist.ipynb`.
-
-(Note that we now have a new directory in `lab2`: `notebooks`. While we don't do training of our models in notebooks, we use them for exploring the data, and perhaps presenting the results of our model training.)
-
-### Brief aside: data directory structure
-
-
-You may have noticed that both MNIST and EMNIST download data from the Internet before training.
-Where is this data stored?
+## New files
 
 ```
-(fsdl-text-recognizer-2021) ➜  lab2 git:(main) ✗ tree -I "lab*|__pycache__" ..
-..
-├── data
-│   ├── downloaded
-│   └── raw
-│       ├── emnist
-│       │   ├── metadata.toml
-│       │   └── readme.md
-├── environment.yml
-├── Makefile
-├── readme.md
-├── requirements
-└── setup
+├── text_recognizer
+│   ├── data
+│   │   ├── base_data_module.py
+│   │   ├── emnist_essentials.json
+│   │   ├── emnist_lines.py
+│   │   ├── emnist.py
+│   │   ├── __init__.py
+│   │   ├── mnist.py
+│   │   ├── sentence_generator.py
+│   │   └── util.py
+│   ├── __init__.py
+│   ├── lit_models
+│   │   ├── base.py
+│   │   ├── ctc.py              <-- NEW
+│   │   ├── __init__.py
+│   │   ├── metrics.py          <-- NEW
+│   │   └── util.py             <-- NEW
+│   ├── models
+│   │   ├── cnn.py
+│   │   ├── __init__.py
+│   │   ├── line_cnn_lstm.py    <-- NEW
+│   │   ├── line_cnn.py         <-- NEW
+│   │   ├── line_cnn_simple.py  <-- NEW
+│   │   └── mlp.py
+│   └── util.py
 ```
 
-We specify the EMNIST dataset with `metadata.toml` and `readme.md` which contain information on how it should be downloaded and its provenance.
+## LineCNNSimple: Reading multiple characters at once
 
-## Using a convolutional network for recognizing MNIST
+Now that we have a dataset of lines and not just single characters, we can apply our convolutional net to it.
 
-We left off in Lab 1 having trained an MLP model on the MNIST digits dataset.
+Let's look again at `notebooks/02-look-at-emnist-lines.ipynb` for a reminder of what the data looks like.
 
-We can now train a CNN for the same purpose:
+The first model we will try is a simple wrapper around `CNN` that applies it to each square slice of the input image in sequence: `LineCNNSimple`.
+
+Go ahead and take a look at the code.
+
+We can train this with
 
 ```sh
-python3 training/run_experiment.py --model_class=CNN --data_class=MNIST --max_epochs=5 --gpus=1
+python training/run_experiment.py --max_epochs=10 --gpus=1 --num_workers=4 --data_class=EMNISTLines --min_overlap=0 --max_overlap=0 --model_class=LineCNNSimple --window_width=28 --window_stride=28
 ```
 
-## Doing the same for EMNIST
+With this, we can get to 90% accuracy.
 
-We can do the same on the larger EMNIST dataset:
+### Loss Function
+
+Note that we are still using the `BaseLitModel` with the default `cross_entropy` loss function.
+From reading [PyTorch docs](https://pytorch.org/docs/stable/nn.functional.html#cross-entropy) on the function, we can see that it accepts multiple labels per example just fine -- it's called "K-dimensional" loss.
+
+### Changing window_stride
+
+Let's go ahead and change window_stride, such that we are sampling overlapping windows.
 
 ```sh
-python3 training/run_experiment.py --model_class=CNN --data_class=EMNIST --max_epochs=5 --gpus=1
+python training/run_experiment.py --max_epochs=10 --gpus=1 --num_workers=4 --data_class=EMNISTLines --min_overlap=0 --max_overlap=0 --model_class=LineCNNSimple --window_width=28 --window_stride=20
 ```
 
-Training the single epoch will take about 2 minutes (that's why we only do one epoch in this lab :)).
-Leave it running while we go on to the next part.
-
-## Intentional overfitting
-
-It is very useful to be able to subsample the dataset for quick experiments and to make sure that the model is robust enough to represent the data (more on this in the Training & Debugging lecture).
-
-This is possible by passing `--overfit_batches=0.01` (or some other fraction).
-You can also provide an int `> 1` instead for a concrete number of batches.
-https://pytorch-lightning.readthedocs.io/en/stable/debugging.html#make-model-overfit-on-subset-of-data
+Oops! That errored. We need add one more flag: `--limit_output_length`, since with the new stride, our model outputs a different length sequence than our ground truth expects (this will not be a problem once we start using CTC loss).
 
 ```sh
-python3 training/run_experiment.py --model_class=CNN --data_class=EMNIST --max_epochs=50 --gpus=1 --overfit_batches=2
+python training/run_experiment.py --max_epochs=10 --gpus=1 --num_workers=4 --data_class=EMNISTLines --min_overlap=0 --max_overlap=0 --model_class=LineCNNSimple --window_width=28 --window_stride=20 --limit_output_length
 ```
 
-## Speeding up training
+This won't get to as high of an accuracy (I max out at <60%), because the dataset does not actually have overlapping characters, whereas our model expects them.
 
-One way we can make sure that our GPU stays consistently highly utilized is to do data pre-processing in separate worker processes, using the `--num_workers=X` flag.
+### Changing overlap
+
+To match our new `window_stride`, we can have our synthetic dataset overlap by 0.25:
 
 ```sh
-python3 training/run_experiment.py --model_class=CNN --data_class=EMNIST --max_epochs=5 --gpus=1 --num_workers=4
+python training/run_experiment.py --max_epochs=10 --gpus=1 --num_workers=4 --data_class=EMNISTLines --min_overlap=0.25 --max_overlap=0.25 --model_class=LineCNNSimple --window_width=28 --window_stride=20 --limit_output_length
 ```
 
-## Making a synthetic dataset of EMNIST Lines
+This will get accuracy into the 80%'s.
 
-- Synthetic dataset we built for this project
-- Sample sentences from Brown corpus
-- For each character, sample random EMNIST character and place on a line (optionally, with some random overlap)
-- Look at: `notebooks/02-look-at-emnist-lines.ipynb`
+### Variable-length overlap
+
+We can see that if our model `window_stride` matches the character overlap in our data, it can train successfully.
+
+Real handwriting has a variety of styles: some people write with characters close together, some far apart, and the width of different characters is also different.
+To make our synthetic data more like this, we can set `--min_overlap=0 --max_overlap=0.33`.
+
+```sh
+python training/run_experiment.py --max_epochs=10 --gpus=1 --num_workers=4 --data_class=EMNISTLines --min_overlap=0 --max_overlap=0.33 --model_class=LineCNNSimple --window_width=28 --window_stride=20 --limit_output_length
+```
+
+As you probably expect, our model is not able to handle this non-uniform overlap amount.
+Best accuracy I get is ~60%.
+
+## LineCNN: making things more efficient
+
+The simple implementation of a line-reading CNN above works fine, but it's highly inefficient if `window_stride` is less than `window_width`, because it send each window through the CNN separately.
+
+We can improve on this with a fully-convolutional model, `LineCNN`.
+
+Go ahead and take a look at the model code.
+
+We can train a model on a fixed-overlap dataset:
+
+```sh
+python training/run_experiment.py --max_epochs=10 --gpus=1 --num_workers=4 --data_class=EMNISTLines --min_overlap=0.25 --max_overlap=0.25 --model_class=LineCNN --window_width=28 --window_stride=20 --limit_output_length
+```
+
+This performs just about the same as the previous model.
+
+## CTC Loss
+
+And now we get to the solution to our problem: CTC loss.
+
+To use it, we introduce `CTCLitModel`, which is enabled by setting `--loss=ctc`.
+
+Let's take a look at the code, and note a few things:
+
+- Start, Blank, Padding tokens
+- `torch.nn.CTCLoss` function
+- `CharacterErrorRate`
+- `.greedy_decode()`
+
+Let's add CTC loss to our current model:
+
+```sh
+python training/run_experiment.py --max_epochs=10 --gpus=1 --num_workers=4 --data_class=EMNISTLines --min_overlap=0.25 --max_overlap=0.25 --model_class=LineCNN --window_width=28 --window_stride=20 --loss=ctc
+```
+
+This gets the CER down to ~18% in 10 epochs.
+
+Best of all, we can now handle variable-overlap data:
+
+```sh
+python training/run_experiment.py --max_epochs=10 --gpus=1 --num_workers=4 --data_class=EMNISTLines --min_overlap=0 --max_overlap=0.33 --model_class=LineCNN --window_width=28 --window_stride=18 --loss=ctc
+```
+
+This gets ~15% CER.
+
+## Add LSTM
+
+Lastly, we can add an LSTM on top of our `LineCNN` and see even more improvement.
+
+The model is `LineCNNLSTM`, take some time to look at it.
+
+We can train with it by running:
+
+```sh
+python training/run_experiment.py --max_epochs=10 --gpus=1 --num_workers=4 --data_class=EMNISTLines --min_overlap=0 --max_overlap=0.33 --model_class=LineCNNLSTM --window_width=28 --window_stride=18 --loss=ctc
+```
 
 ## Homework
 
-Edit the `CNN` and `ConvBlock` architecture in `text_recognizers/models/cnn.py` in some ways.
+Two parts:
 
-In particular, edit the `ConvBlock` module to be more like a ResNet block, as shown in the following image:
+### Experiments
 
-![](./resblock.png)
+Play around with the hyperparameters of the CNN (`window_width`, `window_stride`, `conv_dim`, `fc_dim`) and/or the LSTM (`lstm_dim`, `lstm_layers`).
 
-Some other things to try:
+Better yet, edit `LineCNN` to use residual connections and other CNN tricks, or just change its architecture in some ways, like you did for Lab 2.
 
-- Try adding more of the ResNet secret sauce, such as `BatchNorm`. Take a look at the official ResNet PyTorch implementation for ideas: https://github.com/pytorch/vision/blob/master/torchvision/models/resnet.py
-- Remove `MaxPool2D`, perhaps using a strided convolution instead.
-- Add some command-line arguments to make trying things a quicker process.
-- A good argument to add would be for the number of `ConvBlock`s to run the input through.
+Feel free to edit `LineCNNLSTM` as well, get crazy with LSTM stuff!
+
+### CTCLitModel
+
+In your own words, explain how the `CharacterErrorRate` metric and the `greedy_decode` method work.

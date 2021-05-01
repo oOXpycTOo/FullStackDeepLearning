@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# Data
+data
+
 # Model-related
 *.gz
 *-ubyte
@@ -10,6 +13,7 @@ __pycache__/
 *.pt
 hparams.yaml
 *.ckpt
+*.zip
 
 # C extensions
 *.so

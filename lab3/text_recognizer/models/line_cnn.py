@@ -123,7 +123,7 @@ class LineCNN(nn.Module):
         Returns
         -------
         torch.Tensor
-            (B, C, S) logits, where S is the length of the sequence and C is the number of classes
+            (B, S, C) logits, where S is the length of the sequence and C is the number of classes
             S can be computed from W and self.window_width
             C is self.num_classes
         """
@@ -133,9 +133,8 @@ class LineCNN(nn.Module):
         x = F.relu(self.fc1(x))  # -> (B, S, FC_DIM)
         x = self.dropout(x)
         x = self.fc2(x)  # (B, S, C)
-        x = x.permute(0, 2, 1)  # -> (B, C, S)
         if self.limit_output_length:
-            x = x[:, :, : self.output_length]
+            x = x[:, :self.output_length]
         return x
 
     @staticmethod

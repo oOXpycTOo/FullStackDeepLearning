@@ -40,7 +40,7 @@ class LineCNNSimple(nn.Module):
         Returns
         -------
         torch.Tensor
-            (B, C, S) logits, where S is the length of the sequence and C is the number of classes
+            (B, S, C) logits, where S is the length of the sequence and C is the number of classes
             S can be computed from W and CHAR_WIDTH
             C is self.num_classes
         """
@@ -60,7 +60,8 @@ class LineCNNSimple(nn.Module):
 
         if self.limit_output_length:
             # S might not match ground truth, so let's only take enough activations as are expected
-            activations = activations[:, :, : self.output_length]
+            activations = activations[:, :, :self.output_length]
+        activations = activations.permute(0, 2, 1)
         return activations
 
     @staticmethod

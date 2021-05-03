@@ -53,16 +53,29 @@ class ResidualBlock(nn.Module):
         res_stride = 1
         if downsample:
             res_stride = 2
-        self.conv1 = nn.Conv2d(input_channels, output_channels, kernel_size=3, stride=res_stride, padding=1)
-        self.conv2 = nn.Conv2d(output_channels, output_channels, kernel_size=3, stride=1, padding=1)
+        self.conv1 = nn.Conv2d(input_channels,
+                                output_channels,
+                                kernel_size=3,
+                                stride=res_stride,
+                                padding=1,
+                                bias=False)
         self.relu = nn.ReLU()
-        self.bn1 = nn.BatchNorm2d(num_features=output_channels)
+        self.bn1 = nn.BatchNorm2d(num_features=output_channels) 
+        self.conv2 = nn.Conv2d(output_channels,
+                                output_channels,
+                                kernel_size=3,
+                                stride=1,
+                                padding=1,
+                                bias=False)
         self.bn2 = nn.BatchNorm2d(num_features=output_channels)
+        self.downsample = None
         if downsample:
-            self.downsample = nn.Conv2d(input_channels, output_channels, kernel_size=1, stride=res_stride)
+            self.downsample = nn.Conv2d(input_channels,
+                                        output_channels,
+                                        kernel_size=1,
+                                        stride=res_stride,
+                                        bias=False)
             self.bn_downsample = nn.BatchNorm2d(num_features=output_channels)
-        else:
-            self.downsample = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -80,7 +93,6 @@ class ResidualBlock(nn.Module):
         if self.downsample is not None:
             identity = self.downsample(identity)
             identity = self.bn_downsample(identity)
-            identity = self.relu(identity)
         out = self.conv1(x)
         out = self.bn1(out)
         out = self.relu(out)
@@ -101,15 +113,28 @@ class SqueezeExcitationBlock(nn.Module):
         res_stride = 1
         if downsample:
             res_stride = 2
-        self.conv1 = nn.Conv2d(input_channels, output_channels, kernel_size=3, stride=res_stride, padding=1)
-        self.conv2 = nn.Conv2d(output_channels, output_channels, kernel_size=3, stride=1, padding=1)
+        self.conv1 = nn.Conv2d(input_channels,
+                                output_channels,
+                                kernel_size=3,
+                                stride=res_stride,
+                                padding=1,
+                                bias=False)
+        self.conv2 = nn.Conv2d(output_channels,
+                                output_channels,
+                                kernel_size=3,
+                                stride=1,
+                                padding=1,
+                                bias=False)
         self.bn1 = nn.BatchNorm2d(num_features=output_channels)
         self.bn2 = nn.BatchNorm2d(num_features=output_channels)
+        self.downsample = None
         if downsample:
-            self.downsample = nn.Conv2d(input_channels, output_channels, kernel_size=1, stride=res_stride)
+            self.downsample = nn.Conv2d(input_channels,
+                                        output_channels,
+                                        kernel_size=1,
+                                        stride=res_stride,
+                                        bias=False)
             self.bn_downsample = nn.BatchNorm2d(num_features=output_channels)
-        else:
-            self.downsample = None
 
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.fc_se_1 = nn.Linear(output_channels, output_channels // reduction_rate)
@@ -134,7 +159,6 @@ class SqueezeExcitationBlock(nn.Module):
         if self.downsample is not None:
             identity = self.downsample(identity)
             identity = self.bn_downsample(identity)
-            identity = self.relu(identity)
         residual = self.conv1(x)
         residual = self.bn1(residual)
         residual = self.relu(residual)
@@ -161,22 +185,31 @@ class ResNetBackbone(nn.Module):
                 fc_dim: int,
                 block_type: str) -> None:
         super().__init__()
-        conv_output_dim = conv_dim * 2 ** (n_blocks // self.DOWNSAMPLE_EVERY)
-        self.init_conv = nn.Conv2d(input_size, conv_dim, kernel_size=7, padding=3, stride=2)
+        self.__block_type = block_type
+        self.__conv_dim = conv_dim
+        conv_output_dim = conv_dim * 2 ** ((n_blocks - 2) // self.DOWNSAMPLE_EVERY)
+        self.init_conv = nn.Conv2d(input_size,
+                                    conv_dim,
+                                    kernel_size=7,
+                                    padding=3,
+                                    stride=2,
+                                    bias=False)
         self.init_bn = nn.BatchNorm2d(conv_dim)
-        self.init_pool = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.blocks = self._get_blocks(n_blocks, conv_dim, block_type)
+        self.init_pool = nn.MaxPool2d(kernel_size=3,
+                                    stride=2,
+                                    padding=1)
+        self.blocks = self._get_blocks(n_blocks)
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
         self.linear = nn.Linear(conv_output_dim, fc_dim)
         self.relu = nn.ReLU()
 
-    def _get_blocks(self, n_blocks: int, conv_dim: int, block_type: str) -> torch.nn.ModuleList:
+    def _get_blocks(self, n_blocks: int) -> torch.nn.ModuleList:
         blocks = []
-        input_dim = conv_dim
-        output_dim = conv_dim
-        block_builder = self.BLOCKS[block_type]
+        input_dim = self.__conv_dim
+        output_dim = self.__conv_dim
+        block_builder = self.BLOCKS[self.__block_type]
         for i in range(n_blocks):
-            if (i + 1) % self.DOWNSAMPLE_EVERY == 0:
+            if i >= 2 and (i - 2) % self.DOWNSAMPLE_EVERY == 0:
                 downsample = True
                 output_dim *= 2
             else:

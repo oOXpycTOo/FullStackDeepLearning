@@ -64,7 +64,7 @@ class LineCNNLSTM(nn.Module):
 
         x = self.fc(x)  # -> (S, B, C)
 
-        return x.permute(1, 0, 2)  # -> (B, C, S)
+        return x.permute(1, 2, 0)  # -> (B, C, S)
 
     @staticmethod
     def add_to_argparse(parser):

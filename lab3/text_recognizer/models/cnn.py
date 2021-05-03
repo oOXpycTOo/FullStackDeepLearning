@@ -12,7 +12,7 @@ IMAGE_SIZE = 28
 DEFAULT_BACKBONE = 'resnet'
 DEFAULT_BLOCK = 'residual'
 DEFAULT_POOL_TYPE = 'max_pool'
-SE_REDUCTION_RATE = 2
+SE_REDUCTION_RATE = 4
 N_BLOCKS = 2
 
 
@@ -23,7 +23,7 @@ class ConvBlock(nn.Module):
 
     def __init__(self, input_channels: int, output_channels: int, **kwargs: nn.Module) -> None:
         super().__init__()
-        self.conv = nn.Conv2d(input_channels, output_channels, kernel_size=3, stride=1, padding=1)
+        self.conv = nn.Conv2d(input_channels, output_channels, **kwargs)
         self.relu = nn.ReLU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -162,7 +162,7 @@ class ResNetBackbone(nn.Module):
                 block_type: str) -> None:
         super().__init__()
         conv_output_dim = conv_dim * 2 ** (n_blocks // self.DOWNSAMPLE_EVERY)
-        self.init_conv = nn.Conv2d(input_size, conv_dim, kernel_size=3, padding=1)
+        self.init_conv = nn.Conv2d(input_size, conv_dim, kernel_size=7, padding=3, stride=2)
         self.init_bn = nn.BatchNorm2d(conv_dim)
         self.init_pool = nn.MaxPool2d(kernel_size=2, stride=2)
         self.blocks = self._get_blocks(n_blocks, conv_dim, block_type)
@@ -183,24 +183,56 @@ class ResNetBackbone(nn.Module):
                 downsample = False
             blocks.append(block_builder(input_dim, output_dim, downsample=downsample))
             input_dim = output_dim
-        return nn.ModuleList(blocks)
+        return nn.Sequential(*blocks)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.init_conv(x)
         x = self.init_bn(x)
         x = self.relu(x)
         x = self.init_pool(x)
-        for block in self.blocks:
-            x = block(x)
-        x = self.avg_pool(x).squeeze(-1).squeeze(-1)
+        x = self.blocks(x)
+        x = self.avg_pool(x)
+        x = torch.flatten(x, 1)
         x = self.linear(x)
+        x = self.relu(x)
+        return x
+
+class StupidSimpleBackbone(nn.Module):
+    def __init__(self, input_size: int,
+                conv_dim: int,
+                n_blocks: int,
+                fc_dim: int,
+                block_type: str) -> None:
+        super().__init__()
+        self.conv_1_1 = ConvBlock(input_channels=input_size, output_channels=conv_dim,
+                                kernel_size=5, padding=2)
+        self.conv_1_2 = ConvBlock(input_channels=conv_dim, output_channels=conv_dim,
+                                kernel_size=5, padding=2)
+        self.max_pool_1 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.conv_2_1 = ConvBlock(input_channels=conv_dim, output_channels=conv_dim // 2,
+                                kernel_size=3, padding=1)
+        self.conv_2_2 = ConvBlock(input_channels=conv_dim // 2, output_channels=conv_dim // 2,
+                                kernel_size=3, padding=1)
+        self.max_pool_2 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.fc = nn.Linear(conv_dim // 2 * 49, fc_dim)
+        self.relu = nn.ReLU()
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.conv_1_1(x)
+        x = self.conv_1_2(x)
+        x = self.max_pool_1(x)
+        x = self.conv_2_1(x)
+        x = self.conv_2_2(x)
+        x = self.max_pool_2(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
         x = self.relu(x)
         return x
 
 
 class CNN(nn.Module):
     """Simple CNN for recognizing characters in a square image."""
-    BACKBONES = {'lenet': ConvBlock, 'resnet': ResNetBackbone}
+    BACKBONES = {'lenet': StupidSimpleBackbone, 'resnet': ResNetBackbone}
 
     def __init__(self, data_config: Dict[str, Any], args: argparse.Namespace = None) -> None:
         super().__init__()

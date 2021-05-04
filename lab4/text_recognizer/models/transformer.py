@@ -99,8 +99,8 @@ class TrigPosEncoding2D(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b, h, w, c = x.size()
-        i = torch.arange(h)
-        j = torch.arange(w)
+        i = torch.arange(h, device=x.device)
+        j = torch.arange(w, device=x.device)
         i, j = torch.meshgrid(i, j)
         i, j = i.reshape(-1, 1), j.reshape(-1, 1)
         w_k = 1 / (1e4 ** (torch.arange(self.hidden) / self.hidden))

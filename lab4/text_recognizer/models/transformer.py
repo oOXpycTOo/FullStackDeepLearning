@@ -169,6 +169,7 @@ class ImageTransformerEncoder(nn.Module):
         self.layers = nn.Sequential(*self._get_transformer_layers(hidden_dim, n_heads, n_layers))
         self.positional_embedding = TrigPosEncoding2D(hidden_dim)
         self.semantic_embedding = nn.Linear(3, hidden_dim)
+        self.output_layer = nn.Linear(hidden_dim, 1)
 
     def _get_transformer_layers(self, hidden_dim: int, n_heads: int, n_layers: int) -> List[nn.Module]:
         layers = []

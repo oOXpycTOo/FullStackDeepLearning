@@ -169,7 +169,6 @@ class ImageTransformerEncoder(nn.Module):
         self.layers = nn.Sequential(*self._get_transformer_layers(hidden_dim, n_heads, n_layers))
         self.positional_embedding = TrigPosEncoding2D(hidden_dim)
         self.semantic_embedding = nn.Linear(3, hidden_dim)
-        self.output_layer = nn.Linear(hidden_dim, 1)
 
     def _get_transformer_layers(self, hidden_dim: int, n_heads: int, n_layers: int) -> List[nn.Module]:
         layers = []
@@ -187,8 +186,8 @@ class ImageTransformerEncoder(nn.Module):
         x = x.view(b, h * w, c)  # (b, h*w, c)
         sem_emb = self.semantic_embedding(x)  # (b, h*w, hidden)
         out = self.layers(pos_emb + sem_emb)
-        out = self.output_layer(out)
-        return out.squeeze(-1)
+        res = self.output_layer(out)
+        return out.permute(0, 2, 1).contiguous(), res
 
 
 class ImageBiTransformer(nn.Module):
@@ -201,6 +200,7 @@ class ImageBiTransformer(nn.Module):
         self.height = height // n_tiles
         self.width = width // n_tiles
         self.n_tiles = n_tiles
+        self.hidden_dim = hidden_dim
         self.mini_transformer = ImageTransformerEncoder(self.height,
                                                         self.width,
                                                         hidden_dim // n_tiles,
@@ -229,22 +229,32 @@ class ImageBiTransformer(nn.Module):
             layers.append(TransformerLayer(hidden_dim, n_heads))
         return layers
 
-    def convert_into_tiles(self, x: torch.Tensor) -> torch.Tensor:
+    def image_to_tiles(self, x: torch.Tensor) -> torch.Tensor:
         x = x.unfold(2, self.height, self.width).unfold(3, self.height, self.width)  # convert into tiles
         x = x.contiguous()
         return x
     
+    def tiles_to_image(self, x: torch.tensor) -> torch.Tensor:
+        x = x.view(-1, self.n_tiles * self.n_tiles, self.hidden_dim * self.height * self.width)
+        x = x.permute(0, 2, 1)
+        x = x.contiguous()
+        output_size = (self.height * self.n_tiles, self.width * self.n_tiles)
+        kernel_size = (self.height, self.width)
+        stride = (self.height, self.width)
+        return F.fold(x, output_size=output_size, kernel_size=kernel_size, stride=stride)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
             x: torch.Tensor, (B, 3, H, W), B - batch_size, H - image height, W - image width.
         """
-        tiles = self.convert_into_tiles(x)  # (B, 3, NT, NT, TH, TW)
+        tiles = self.image_to_tiles(x)  # (B, 3, NT, NT, TH, TW)
         bs, c, nt, nt, h, w = tiles.size()
         tiles = tiles.permute(0, 2, 3, 1, 4, 5)
         tiles = tiles.contiguous()
         tiles = tiles.view(bs * nt * nt, c, h, w)  # (B * NT ** 2, 3, H, W)
-        encoded = self.mini_transformer(tiles)  # (B*NT**2, TH*TW)
-        encoded = encoded.view(bs, nt, nt, -1)  # (B, NT, NT, TH*TW)
+        tiles, encoded = self.mini_transformer(tiles)  # (B*NT**2, TH*TW)
+        tiles = tiles.view(bs, nt, nt, self.hidden_dim, self.height, self.width)  # (B, NT, NT, TH*TW)
+        img = self.tiles_to_image(tiles)  # (B, HIDDEN, H, W)
         pos_emb = self.positional_embedding(encoded)  # (1, NT, HIDDEN)
         encoded = encoded.view(bs, nt*nt, -1)
         sem_emb = self.semantic_embedding(encoded)  # (B, NT*NT, HIDDEN)
@@ -254,5 +264,6 @@ class ImageBiTransformer(nn.Module):
         out = F.interpolate(out,
                             size=(self.height * self.n_tiles, self.width * self.n_tiles),
                             mode='bilinear')
+        out = out + img
         out = self.output_layer(out)
         return out

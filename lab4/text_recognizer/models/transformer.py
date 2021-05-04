@@ -1,4 +1,4 @@
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, List
 import argparse
 
 import torch
@@ -92,6 +92,25 @@ class PositionalEncoding2D(nn.Module):
         return pos_expanded
 
 
+class TrigPosEncoding2D(nn.Module):
+    def __init__(self, hidden: int, *args, **kwargs):
+        super().__init__()
+        self.hidden = hidden
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        b, h, w, c = x.size()
+        i = torch.arange(h)
+        j = torch.arange(w)
+        i, j = torch.meshgrid(i, j)
+        i, j = i.reshape(-1, 1), j.reshape(-1, 1)
+        w_k = 1 / (1e4 ** (torch.arange(self.hidden) / self.hidden))
+        pos = torch.sin(w_k * i) + torch.cos(w_k * j)  # (H*W, C)
+        return pos[None]  # (1, H*W, C)
+
+
+EMBEDDINGS = {'trig': TrigPosEncoding2D}
+
+
 class TransformerLayer(nn.Module):
     def __init__(self, hidden_dim: int, n_heads: int) -> None:
         super().__init__()
@@ -137,6 +156,42 @@ class Transformer(nn.Module):
 
 
 class ImageTransformerEncoder(nn.Module):
+    def __init__(self, height: int = 512,
+                 width: int = 512,
+                 hidden_dim: int = 256,
+                 n_heads: int = 8,
+                 n_layers: int = 2,
+                 n_tiles: int = 32,
+                 embedding: str = 'trig') -> None:
+        super().__init__()
+        self.height = height
+        self.width = width
+        self.layers = nn.Sequential(*self._get_transformer_layers(hidden_dim, n_heads, n_layers))
+        self.positional_embedding = TrigPosEncoding2D(hidden_dim)
+        self.semantic_embedding = nn.Linear(3, hidden_dim)
+        self.output_layer = nn.Linear(hidden_dim, 1)
+
+    def _get_transformer_layers(self, hidden_dim: int, n_heads: int, n_layers: int) -> List[nn.Module]:
+        layers = []
+        for _ in range(n_layers):
+            layers.append(TransformerLayer(hidden_dim, n_heads))
+        return layers
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+            x: torch.Tensor, (B, 3, H, W), B - batch_size, H - image height, W - image width.
+        """
+        b, c, h, w = x.size()
+        x = x.permute(0, 2, 3, 1).contiguous()  # (b, h, w, c)
+        pos_emb = self.positional_embedding(x)  # (1, h*w, hidden)
+        x = x.view(b, h * w, c)  # (b, h*w, c)
+        sem_emb = self.semantic_embedding(x)  # (b, h*w, hidden)
+        out = self.layers(pos_emb + sem_emb)
+        out = self.output_layer(out)
+        return out.squeeze(-1)
+
+
+class ImageBiTransformer(nn.Module):
     def __init__(self, height: int = 512, width: int = 512,
                  hidden_dim: int = 256,
                  n_heads: int = 8,
@@ -146,36 +201,58 @@ class ImageTransformerEncoder(nn.Module):
         self.height = height // n_tiles
         self.width = width // n_tiles
         self.n_tiles = n_tiles
-        self.layers = nn.Sequential(*[TransformerLayer(hidden_dim, n_heads) for _ in range(n_layers)])
-        self.positional_embedding = nn.Embedding(n_tiles * n_tiles, hidden_dim)
-        self.semantic_embedding = nn.Linear(self.height * self.width * 3, hidden_dim)
-        self.output_layer = nn.Linear(hidden_dim, 3 * self.height * self.width)
+        self.mini_transformer = ImageTransformerEncoder(self.height,
+                                                        self.width,
+                                                        hidden_dim // n_tiles,
+                                                        n_heads // 2,
+                                                        n_layers)
+        self.layers = nn.Sequential(*self._get_transformer_layers(hidden_dim, n_heads, n_layers))
+        self.positional_embedding = TrigPosEncoding2D(hidden_dim)
+        self.semantic_embedding = nn.Linear(self.height * self.width, hidden_dim)
+        self.output_layer = nn.Sequential(nn.Upsample((self.height * self.n_tiles, self.width * self.n_tiles),
+                                                        mode='bilinear',
+                                                        align_corners=True),
+                                          nn.Conv2d(hidden_dim,
+                                                    hidden_dim,
+                                                    kernel_size=3,
+                                                    padding=1,
+                                                    bias=False),
+                                          nn.ReLU(),
+                                          nn.Conv2d(hidden_dim,
+                                                    3,
+                                                    kernel_size=1,
+                                                    bias=False))
+
+    def _get_transformer_layers(self, hidden_dim: int, n_heads: int, n_layers: int) -> List[nn.Module]:
+        layers = []
+        for _ in range(n_layers):
+            layers.append(TransformerLayer(hidden_dim, n_heads))
+        return layers
 
     def convert_into_tiles(self, x: torch.Tensor) -> torch.Tensor:
         x = x.unfold(2, self.height, self.width).unfold(3, self.height, self.width)  # convert into tiles
         x = x.contiguous()
-        x = x.view(-1, 3, self.n_tiles * self.n_tiles, self.height * self.width)  # flatten the tiles
-        x = x.permute(0, 2, 1, 3)  # (B, 3, S, C) -> (B, S, 3, C)
-        x = x.contiguous()
-        return x.view(-1, self.n_tiles * self.n_tiles, 3 * self.height * self.width)  # (B, S, 3 * C)
+        return x
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
             x: torch.Tensor, (B, 3, H, W), B - batch_size, H - image height, W - image width.
         """
-        tiles = self.convert_into_tiles(x)
-        sem_emb = self.semantic_embedding(tiles)
-        t = torch.arange(self.n_tiles)
-        t_x, t_y = torch.meshgrid(t, t)
-        t = t_x.flatten() + t_y.flatten()
-        t = t[None].expand(x.size(0), self.n_tiles * self.n_tiles)
-        pos_emb = self.positional_embedding(t)
-        out = self.layers(pos_emb + sem_emb)
-        out = self.output_layer(out)
-        tiles = out.view(-1, self.n_tiles * self.n_tiles, 3 * self.height * self.width).permute(0, 2, 1)
+        tiles = self.convert_into_tiles(x)  # (B, 3, NT, NT, TH, TW)
+        bs, c, nt, nt, h, w = tiles.size()
+        tiles = tiles.permute(0, 2, 3, 1, 4, 5)
         tiles = tiles.contiguous()
-        output_size = (self.height * self.n_tiles, self.width * self.n_tiles)
-        kernel_size = (self.height, self.width)
-        stride = (self.height, self.width)
-        img = F.fold(tiles, output_size=output_size, kernel_size=kernel_size, stride=stride)
-        return img
+        tiles = tiles.view(bs * nt * nt, c, h, w)  # (B * NT ** 2, 3, H, W)
+        encoded = self.mini_transformer(tiles)  # (B*NT**2, TH*TW)
+        encoded = encoded.view(bs, nt, nt, -1)  # (B, NT, NT, TH*TW)
+        pos_emb = self.positional_embedding(encoded)  # (1, NT, HIDDEN)
+        encoded = encoded.view(bs, nt*nt, -1)
+        sem_emb = self.semantic_embedding(encoded)  # (B, NT*NT, HIDDEN)
+        out = self.layers(pos_emb + sem_emb)  # (B, NT*NT, HIDDEN)
+        out = out.permute(0, 2, 1).contiguous()
+        out = out.view(bs, -1, nt, nt)
+        out = F.interpolate(out,
+                            size=(self.height * self.n_tiles, self.width * self.n_tiles),
+                            mode='bilinear')
+        out = self.output_layer(out)
+        return out

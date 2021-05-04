@@ -103,7 +103,7 @@ class TrigPosEncoding2D(nn.Module):
         j = torch.arange(w, device=x.device)
         i, j = torch.meshgrid(i, j)
         i, j = i.reshape(-1, 1), j.reshape(-1, 1)
-        w_k = 1 / (1e4 ** (torch.arange(self.hidden) / self.hidden))
+        w_k = 1 / (1e4 ** (torch.arange(self.hidden, device=x.device) / self.hidden))
         pos = torch.sin(w_k * i) + torch.cos(w_k * j)  # (H*W, C)
         return pos[None]  # (1, H*W, C)
 

@@ -79,7 +79,7 @@ class PositionalEncoding2D(nn.Module):
 
     def forward(self, t: torch.Tensor) -> torch.Tensor:
         pos_expanded = self.pos[None, :, :, :, None, None]
-        return pos_expanded
+        return pos_expanded.to(t.device)
 
 
 class TransformerLayer(nn.Module):
